@@ -157,6 +157,7 @@ public class GZIPOutputStream extends DeflaterOutputStream {
      */
     public void finish() throws IOException {
         if (!def.finished()) {
+            System.out.println("GZIP finish!");
             def.finish();
             while (!def.finished()) {
                 int len = def.deflate(buf, 0, buf.length);
@@ -182,6 +183,7 @@ public class GZIPOutputStream extends DeflaterOutputStream {
      * Writes GZIP member header.
      */
     private void writeHeader() throws IOException {
+        System.out.println("Write Header");
         out.write(new byte[] {
                       (byte) GZIP_MAGIC,        // Magic number (short)
                       (byte)(GZIP_MAGIC >> 8),  // Magic number (short)

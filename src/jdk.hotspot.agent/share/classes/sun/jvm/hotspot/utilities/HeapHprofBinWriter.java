@@ -27,6 +27,7 @@ package sun.jvm.hotspot.utilities;
 import java.io.*;
 import java.nio.channels.*;
 import java.util.*;
+import java.util.zip.*;
 import sun.jvm.hotspot.debugger.*;
 import sun.jvm.hotspot.memory.*;
 import sun.jvm.hotspot.oops.*;
@@ -318,6 +319,12 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
     // The approximate size of a heap segment. Used to calculate when to create
     // a new segment.
     private static final long HPROF_SEGMENTED_HEAP_DUMP_SEGMENT_SIZE = 1L * 0x40000000;
+    
+    // The buffer size for BufferedOutputStream. Used when gzipped heap dump is enabled.
+    // Since it is hard to calculate and fill the data size of an segment in compressed
+    // data, making the segment within this size could help rewrite the data size before
+    // the segment data are written to GZIPOutputStream
+    private static final long HPROF_MAX_SEGMENT_SIZE_FOR_COMPRESSED_DUMP = 1L << 20;
 
     // hprof binary file header
     private static final String HPROF_HEADER_1_0_2 = "JAVA PROFILE 1.0.2";
@@ -386,14 +393,34 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
     public HeapHprofBinWriter() {
         this.KlassMap = new ArrayList<Klass>();
         this.names = new HashSet<Symbol>();
+        this.gzLevel = 0;
+    }
+
+    public HeapHprofBinWriter(int gzLevel) {
+        this.KlassMap = new ArrayList<Klass>();
+        this.names = new HashSet<Symbol>();
+        this.gzLevel = gzLevel;
+
     }
 
     public synchronized void write(String fileName) throws IOException {
         VM vm = VM.getVM();
 
+        GZIPOutputStream gzipOut = null;
         // open file stream and create buffered data output stream
         fos = new FileOutputStream(fileName);
-        out = new DataOutputStream(new BufferedOutputStream(fos));
+
+        if (isCompression()) {
+            gzipOut = new GZIPOutputStream(fos) {
+                {
+                    System.out.println("zlin: dump with level: " + gzLevel);
+                    this.def.setLevel(gzLevel);
+                }
+            };
+            out = new DataOutputStream(new BufferedOutputStream(gzipOut, HPROF_MAX_SEGMENT_SIZE_FOR_COMPRESSED_DUMP));
+        } else {
+            out = new DataOutputStream(new BufferedOutputStream(fos));
+        }
 
         dbg = vm.getDebugger();
         objectHeap = vm.getObjectHeap();
@@ -420,7 +447,7 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         DOUBLE_SIZE = objectHeap.getDoubleSize();
 
         // Check weather we should dump the heap as segments
-        useSegmentedHeapDump = vm.getUniverse().heap().used() > HPROF_SEGMENTED_HEAP_DUMP_THRESHOLD;
+        useSegmentedHeapDump = isCompression() ? true : vm.getUniverse().heap().used() > HPROF_SEGMENTED_HEAP_DUMP_THRESHOLD;
 
         // hprof bin format header
         writeFileHeader();
@@ -443,7 +470,6 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
 
         // this will write heap data into the buffer stream
         super.write();
-
         // flush buffer stream.
         out.flush();
 
@@ -458,9 +484,8 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         }
 
         // flush buffer stream and throw it.
-        out.flush();
+        out.close();
         out = null;
-
         // close the file stream
         fos.close();
     }
@@ -477,7 +502,7 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
             // remember position of dump length, we will fixup
             // length later - hprof format requires length.
             out.flush();
-            currentSegmentStart = fos.getChannel().position();
+            currentSegmentStart = out.size();// fos.getChannel().position();
             // write dummy length of 0 and we'll fix it later.
             out.writeInt(0);
         }
@@ -497,7 +522,7 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
     private void fillInHeapRecordLength() throws IOException {
 
         // now get the current position to calculate length
-        long dumpEnd = fos.getChannel().position();
+        long dumpEnd = out.size(); //fos.getChannel().position();
 
         // calculate the length of heap data
         long dumpLenLong = (dumpEnd - currentSegmentStart - 4L);
@@ -508,7 +533,8 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         }
 
         // Save the current position
-        long currentPosition = fos.getChannel().position();
+        System.out.println("fillin: out size is:" + out.size() + " fos is: " + fos.getChannel().position());
+        long currentPosition = out.size();//fos.getChannel().position();
 
         // seek the position to write length
         fos.getChannel().position(currentSegmentStart);
@@ -1226,6 +1252,10 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         return size;
     }
 
+    private boolean isCompression() {
+      return (this.gzLevel >= 1 && this.gzLebel <= 9);
+    }
+
     // We don't have allocation site info. We write a dummy
     // stack trace with this id.
     private static final int DUMMY_STACK_TRACE_ID = 1;
@@ -1236,6 +1266,7 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
     private Debugger dbg;
     private ObjectHeap objectHeap;
     private ArrayList<Klass> KlassMap;
+    private int gzLevel;
 
     // oopSize of the debuggee
     private int OBJ_ID_SIZE;
